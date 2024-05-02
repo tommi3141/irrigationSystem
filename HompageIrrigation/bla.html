@@ -1,0 +1,557 @@
+#include "WiFi.h"
+#include <AsyncTCP.h>
+#include "ESPAsyncWebServer.h"
+#include <ESP32Time.h>
+ 
+
+//----------------------------global variable
+
+  
+volatile int irrigationActive;
+
+
+// Auxiliar variables to store the current output state
+String RedValveState = "off";
+String yellowLEDState = "off";
+
+// Assign output variables to GPIO pins
+volatile const int redLED = 32;
+volatile const int yellowLED = 33;
+
+const char* Hour = "hour";
+const char* Minute = "minute";
+
+
+const char* HotDuration = "HotDuration";
+const char* NormalDuration = "NormalDuration";
+const char* CoolDuration = "CoolDuration";
+
+const int IrrigationStartHour = 6;
+const int IrrigationStartMinute = 0;
+String valveState = "off";
+
+bool irrigation = false;
+volatile bool MyBoolen = true; 
+int IrrigationDurationHot = 90;
+int IrrigationDurationNormal = 60;
+int IrrigationDurationCool = 30;
+volatile int currentDuration = 60;
+
+
+//-----------------------Timer Stuff------------------
+
+hw_timer_t * valveTimer = NULL;
+hw_timer_t * helperTimer = NULL;
+portMUX_TYPE timerMux0 = portMUX_INITIALIZER_UNLOCKED;
+portMUX_TYPE timerMux1 = portMUX_INITIALIZER_UNLOCKED;
+
+volatile uint8_t yellowledState = 0; 
+
+//Timer to disable Valve after <duration>
+void IRAM_ATTR onValveTimer(){
+  // Critical Code here
+  portENTER_CRITICAL_ISR(&timerMux0);
+    digitalWrite(redLED, LOW);   // turn the LED on or off
+    irrigationActive = false;
+    timerStop(valveTimer);
+  portEXIT_CRITICAL_ISR(&timerMux0);
+}
+
+void IRAM_ATTR onHelperTimer(){
+  // Critical Code here
+  portENTER_CRITICAL_ISR(&timerMux1);
+    yellowledState = 1-yellowledState;
+    digitalWrite(yellowLED, yellowledState);   // turn the LED on or off
+    MyBoolen = true;
+  portEXIT_CRITICAL_ISR(&timerMux1);
+}
+
+
+//---------------------------web server general----------------------
+
+const char *ssid = "IrrigationSystem";
+const char *password = "1234";
+AsyncWebServer server(80);
+
+//-----------------------------set time html-------------------------
+
+const char setTime_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE HTML><html><head>
+  <title>ESP Input Form</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  </head><body>
+  <span class="CurrentTime">CurrentTime</span> 
+  <span id="time">%TIME%</span>
+  <form action="/get">
+    Current Hour: <input type="number" name="hour"
+       min="0" max="23">
+    <input type="submit" value="Submit">
+  </form><br>
+  <form action="/get">
+    Current Minute: <input type="number" name="minute"
+        min="0" max="59">
+    <input type="submit" value="Submit">
+  </form><br>
+
+  <p><a href="/">Home</a></p>
+</body>
+<script>
+setInterval(function ( ) {
+  var xhttp = new XMLHttpRequest();
+  xhttp.onreadystatechange = function() {
+    if (this.readyState == 4 && this.status == 200) {
+      document.getElementById("time").innerHTML = this.responseText;
+    }
+  };
+  xhttp.open("GET", "/time", true);
+  xhttp.send();
+}, 1000 ) ;
+
+</script>
+</html>)rawliteral";
+
+
+//------------------------------SetDuration------------------
+const char setDuration_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE HTML><html><head>
+  <title>ESP Input Form</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  </head><body>
+  
+  <form action="/get">
+    Current HOT Duration (in Min): <input type="number" name="HotDuration"
+       min="0" max="120">
+    <input type="submit" value="Submit">
+  </form><br>
+  <form action="/get">
+    Current NORMAL Duration (in Min): <input type="number" name="NormalDuration"
+       min="0" max="120">
+    <input type="submit" value="Submit">
+  </form><br>
+  <form action="/get">
+    Current COOL Duration (in Min): <input type="number" name="CoolDuration"
+       min="0" max="120">
+    <input type="submit" value="Submit">
+  </form><br>
+
+  <p><a href="/">Home</a></p>
+ 
+</body>
+</html>)rawliteral";
+
+
+//---------------------------HomePage------------------------
+
+const char HomePage_Old[] PROGMEM = R"rawliteral(
+<!DOCTYPE HTML><html><head>
+  <title>ESP Input Form</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  </head>
+  <style>
+    html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}
+   .button { background-color: #4CAF50; border: none; color: white; padding: 16px 40px; text-decoration: none; font-size: 30px; margin: 2px; cursor: pointer;}
+   .button2 {background-color: #555555;}</style></head>
+  <body><h1>ElbenLand Water Server</h1>
+  <span class="CurrentTime">CurrentTime</span> 
+  <span id="time">%TIME%</span>
+  <p>Valve - State %VALVESTATE% </p>
+
+  <form action="/setPlan">
+  <p>Select a Irrigation Duration:</p>
+  <fieldset>
+    <input type="radio" id="cool" name="cool" value="cool">
+    <label for="cool"> Cool </label> 
+    <input type="radio" id="normal" name="normal" value="normal">
+    <label for="normal"> Normal</label>
+    <input type="radio" id="hot" name="hot" value="hot">
+    <label for="hot"> Hot</label> 
+  </fieldset>
+  </form>
+
+  <p>check current irrigation durations:</p>
+  <button onclick="checkDuration()">Click me</button>
+  <p id="durations"></p>
+
+  <h3>Settings</h3>
+  <p><a href="/setDuration">Change Duration</a></p>
+  <p><a href="/setTime">Change current Time</a></p>
+ 
+</body>
+
+<script>
+setInterval(function ( ) {
+  var xhttp = new XMLHttpRequest();
+  xhttp.onreadystatechange = function() {
+    if (this.readyState == 4 && this.status == 200) {
+      document.getElementById("time").innerHTML = this.responseText;
+    }
+  };
+  xhttp.open("GET", "/time", true);
+  xhttp.send();
+}, 1000 ) ;
+function checkDuration() {
+  var xhttp = new XMLHttpRequest();
+  xhttp.onreadystatechange = function() {
+    if (this.readyState == 4 && this.status == 200) {
+      document.getElementById("durations").innerHTML = this.responseText;
+    }
+  };
+  xhttp.open("GET", "/duration", true);
+  xhttp.send();
+}
+</script>
+</html>)rawliteral";
+
+
+//--------------------------------HomePage--------------
+
+
+const char HomePage[] PROGMEM = R"rawliteral(
+<!DOCTYPE HTML><html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Elben Irrigation System</title>
+    <style>
+      html {
+        font-family: Helvetica;
+        display: inline-block;
+        margin: 0px auto;
+        text-align: center;
+      }
+      .Box {
+        border: 3px solid rgb(2, 112, 29);
+        border-radius: 1rem;
+        margin: auto;
+      }
+      .button {
+        background-color: #4caf50;
+        border: none;
+        color: white;
+        padding: 16px 40px;
+        text-decoration: none;
+        font-size: 30px;
+        margin: 2px;
+        cursor: pointer;
+      }
+      .button2 {
+        background-color: #555555;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Elben Irrigation System</h1>
+
+    <div class="Box">
+      <h2>Status</h2>
+      <p id="time">%TIME%</p>
+      <p>Valve: %VALVESTATE%</p>
+      <p>Start Irrigation at: %STARTTIME% for %DURATION% min</p>
+    </div>
+
+    <br />
+
+    <div class="Box">
+      <h2>Manual Trigger</h2>
+      <form action="/get">
+        <label for="Duration">Duration:</label><br />
+        <input
+          type="number"
+          id="Duration"
+          name="Duration"
+          value="30"
+          min="0"
+          max="120"
+        /><br /><br />
+        <input class="button" type="submit" value="Start Now" />
+      </form>
+    </div>
+    <br />
+
+    <div class="Box">
+      <h2>Change Plan</h2>
+      <form action="/get">
+        <label for="Duration">Duration:</label><br />
+        <input type="radio" name="Duration" value="Hot" />
+        Hot (%IrrigationDurationHot%)<br />
+        <input type="radio" name="Duration" value="Normal" />
+        Normal (%IrrigationDurationNormal%)<br />
+        <input type="radio" name="Duration" value="Cool" />
+        Cool (%IrrigationDurationCool%)<br />
+        <input type="radio" name="Duration" value="" />Choose duration in min
+        <input type="number" name="other_reason" min="0" max="120" />
+        <br />
+        <p>Starttime:</p>
+        <label for="Starttimeh">Hour:</label>
+        <input
+          type="number"
+          id="Starttimeh"
+          name="Starttimeh"
+          value="5"
+          min="0"
+          max="23"
+        /><br />
+        <label for="Starttimemin">Min:</label>
+        <input
+          type="number"
+          id="Starttimemin"
+          name="Starttimemin"
+          value="50"
+          min="0"
+          max="59"
+        /><br /><br />
+        <input class="button" type="submit" value="Change Plan" />
+      </form>
+    </div>
+
+    <br />
+    <div class="Box">
+      <h2>Settings</h2>
+      <p><a href="/setDuration">Change Irrigation</a></p>
+      <p><a href="/setTime">Change current Time</a></p>
+    </div>
+  </body>
+
+<script>
+setInterval(function ( ) {
+  var xhttp = new XMLHttpRequest();
+  xhttp.onreadystatechange = function() {
+    if (this.readyState == 4 && this.status == 200) {
+      document.getElementById("time").innerHTML = this.responseText;
+    }
+  };
+  xhttp.open("GET", "/time", true);
+  xhttp.send();
+}, 1000 ) ;
+function checkDuration() {
+  var xhttp = new XMLHttpRequest();
+  xhttp.onreadystatechange = function() {
+    if (this.readyState == 4 && this.status == 200) {
+      document.getElementById("durations").innerHTML = this.responseText;
+    }
+  };
+  xhttp.open("GET", "/duration", true);
+  xhttp.send();
+}
+</script>
+</html>)rawliteral";
+
+
+
+
+//------------------------------testPage------------------------
+
+const char test_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE HTML><html><head>
+  <title>ESP Input Form</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  </head><body>
+  
+  <p>Das ist ein Test: %TEST1%</p>
+  <p>Noch ein Test: %TEST2%</p>
+
+  <p><a href="/">Home</a></p>
+ 
+</body>
+</html>)rawliteral";
+
+
+
+//------------------------------------RTC_on_Board------------------
+ESP32Time rtc(0);
+String currentTime;
+
+
+ 
+//-----------------------------------helper functions----------------------
+
+void notFound(AsyncWebServerRequest *request) {
+  request->send(404, "text/plain", "Not found");
+}
+
+String TimeProcessor(const String& var){
+  //Serial.println(var);
+  if(var == "TIME"){
+    currentTime = rtc.getTime();
+    return currentTime;
+  }
+  return String();
+}
+
+String TestProcessor(const String& var){
+  //Serial.println(var);
+  if(var == "TEST1"){
+    return "HAALO1";
+  }
+  if(var == "TEST2"){
+    return "HAALO2";
+  }
+  return String();
+}
+
+String ValveProcessor(const String& var){
+  //Serial.println(var);
+  if(var == "VALVESTATE"){
+    return valveState;
+  }
+  return String();
+}
+
+
+
+//-----------------------------------Setup-Functions------------------
+void setup_RTC() {
+  //in case of time loss
+  rtc.setTime(1, 16, 15, 5, 7, 2022);  // 17th Jan 2021 15:24:30
+}
+
+
+void setup_Test_LEDs() {
+  // Initialize the output variables as outputs
+  pinMode(redLED, OUTPUT);
+  pinMode(yellowLED, OUTPUT);
+  // Set outputs to LOW
+  digitalWrite(redLED, LOW);
+  digitalWrite(yellowLED, LOW);
+}
+
+void setup_Sever(){
+  Serial.begin(115200);
+ 
+  WiFi.softAP(ssid, password);
+ 
+  Serial.println();
+  Serial.print("IP address: ");
+  Serial.println(WiFi.softAPIP());
+
+
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send_P(200, "text/html", HomePage, ValveProcessor);
+  });
+  
+  // Send web page with input fields to client
+  server.on("/setTime", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send_P(200, "text/html", setTime_html, TimeProcessor);
+  });
+
+  server.on("/test", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send_P(200, "text/html", test_html, TestProcessor);
+  });
+
+  server.on("/setDuration", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send_P(200, "text/html", setDuration_html);
+  });
+
+  server.on("/time", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send_P(200, "text/plain", rtc.getTime().c_str());
+  });
+
+
+  // Send a GET request to <ESP_IP>/get?input1=<inputMessage>
+  server.on("/get", HTTP_GET, [] (AsyncWebServerRequest *request) {
+    String inputMessage;
+    String inputParam;
+    // GET input1 value on <ESP_IP>/get?input1=<inputMessage>
+    if (request->hasParam(Hour)) {
+      inputMessage = request->getParam(Hour)->value();
+      inputParam = Hour;
+      rtc.setTime(rtc.getSecond(), rtc.getMinute(), inputMessage.toInt(), rtc.getDay(), rtc.getMonth(),rtc.getYear());
+      request->send_P(200, "text/html", setTime_html, TimeProcessor);
+    }
+    // GET input2 value on <ESP_IP>/get?Minute=<inputMessage>
+    else if (request->hasParam(Minute)) {
+      inputMessage = request->getParam(Minute)->value();
+      inputParam = Minute;
+      rtc.setTime(rtc.getSecond(), inputMessage.toInt(), rtc.getHour(true), rtc.getDay(), rtc.getMonth(),rtc.getYear());
+      request->send_P(200, "text/html", setTime_html, TimeProcessor);
+    }
+    else if (request->hasParam(HotDuration)) {
+      IrrigationDurationHot = request->getParam(HotDuration)->value().toInt();
+      request->send_P(200, "text/html", setDuration_html);     
+    }
+    else if (request->hasParam(NormalDuration)) {
+      IrrigationDurationNormal = request->getParam(NormalDuration)->value().toInt(); 
+      request->send_P(200, "text/html", setDuration_html); 
+    }
+    else if (request->hasParam(CoolDuration)) {
+      IrrigationDurationCool = request->getParam(CoolDuration)->value().toInt();  
+      request->send_P(200, "text/html", setDuration_html);
+    }
+    else if (request->hasParam(CoolDuration)) {
+      IrrigationDurationCool = request->getParam(CoolDuration)->value().toInt();  
+      request->send_P(200, "text/html", setDuration_html);
+    }
+    else {
+      inputMessage = "No message sent";
+      inputParam = "none";
+    }
+    Serial.println(inputMessage);
+    
+   
+  });
+  server.onNotFound(notFound);
+  server.begin();
+}
+
+//---------------------------------------Timer---------------------------
+
+
+void StartTimerValve(int duration){
+  Serial.println("start valve Timer");
+  valveTimer = timerBegin(0, 80, true);  // timer 0, MWDT clock period = 12.5 ns * TIMGn_Tx_WDT_CLK_PRESCALE -> 12.5 ns * 80 -> 1000 ns = 1 us, countUp
+  timerAttachInterrupt(valveTimer, &onValveTimer, true); // edge (not level) triggered 
+  timerAlarmWrite(valveTimer, duration * 60 * 1000000 , true); // duration min 
+  // at least enable the timer alarms 
+  timerAlarmEnable(valveTimer); // enable
+}
+
+void StartTimerBlink(int duration){
+  Serial.println("start timer 1");
+  helperTimer = timerBegin(1, 80, true);  // timer 1, MWDT clock period = 12.5 ns * TIMGn_Tx_WDT_CLK_PRESCALE -> 12.5 ns * 80 -> 1000 ns = 1 us, countUp
+  timerAttachInterrupt(helperTimer, &onHelperTimer, true); // edge (not level) triggered 
+  timerAlarmWrite(helperTimer, duration , true); // 2000000 * 1 us = duration s, 
+  // at least enable the timer alarms
+  timerAlarmEnable(helperTimer); // enable 
+}
+
+void printInfos(){
+  if(irrigationActive){
+    Serial.println("irrigation is active");
+  }else{
+    Serial.println("irrigation not active");
+  }
+  Serial.println("Irrigation StartTime " + String(IrrigationStartHour) + ":" + String(IrrigationStartMinute));
+  Serial.println("Irrigation Should run for:" + String(currentDuration));
+}
+
+
+
+//----------------------------------main-functions----------------------
+
+
+void setup() {
+
+  Serial.begin(115200);
+  setup_RTC();
+  setup_Test_LEDs();
+  setup_Sever();
+  StartTimerBlink(2000000);
+ 
+}
+
+void loop() {
+  if(rtc.getHour() == IrrigationStartHour && rtc.getMinute() == IrrigationStartMinute && !irrigationActive){
+    StartTimerValve(10);
+    irrigationActive = true;
+    digitalWrite(redLED, HIGH);
+  }
+
+  if(MyBoolen){
+    printInfos();
+    MyBoolen = false;
+  }
+  
+
+  
+}

@@ -1,0 +1,166 @@
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Elben Irrigation System</title>
+    <style>
+      html {
+        font-family: Helvetica;
+        display: inline-block;
+        margin: 0px auto;
+        text-align: center;
+      }
+      .Box {
+        border: 3px solid rgb(2, 112, 29);
+        border-radius: 1rem;
+        margin: auto;
+      }
+      .button {
+        background-color: #4caf50;
+        border: none;
+        color: white;
+        padding: 16px 40px;
+        text-decoration: none;
+        font-size: 30px;
+        margin: 2px;
+        cursor: pointer;
+      }
+      .button2 {
+        background-color: #555555;
+      }
+      .time-input input {
+        width: 60px;
+      }
+
+      #duration {
+        width: 60px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Elben Irrigation System</h1>
+
+    <div class="Box">
+      <h2>Status</h2>
+      <p>%TIME%</p>
+      <p>Valve: %VALVESTATE%</p>
+      <p></p>
+      <p>Start Irrigation at: %STARTTIME% for %DURATION% min</p>
+    </div>
+
+    <br />
+
+    <div class="Box">
+      <h2>Manual Trigger</h2>
+      <form action="/get">
+        <label for="Duration">Duration:</label><br />
+        <input
+          type="number"
+          id="Duration"
+          name="Duration"
+          value="30"
+          min="0"
+          max="120"
+        /><br /><br />
+        <input
+          onClick="TestFun()"
+          class="button"
+          type="submit"
+          value="Start Now"
+        />
+      </form>
+    </div>
+    <br />
+
+    <div class="Box">
+      <h2>Change Plan</h2>
+
+      <form
+        action="#"
+        route="/blubb"
+        onsubmit="return sendData(this, calculateStartEndTime)"
+      >
+        <div class="time-input">
+          <input
+            type="number"
+            id="hour"
+            min="0"
+            max="24"
+            oninput="enforceMinMax(this)"
+            value="5"
+          />
+          :
+          <input
+            type="number"
+            id="minute"
+            min="0"
+            max="60"
+            oninput="enforceMinMax(this)"
+            value="0"
+          />
+        </div>
+
+        Duration (minutes):
+        <input
+          type="number"
+          id="duration"
+          min="0"
+          max="120"
+          oninput="enforceMinMax(this)"
+          value="0"
+        />
+        <br />
+        <input type="submit" />
+      </form>
+
+      <form action="/get">
+        <label for="Duration">Duration:</label><br />
+        <input type="radio" name="Duration" value="Hot" />
+        Hot (%IrrigationDurationHot%)<br />
+        <input type="radio" name="Duration" value="Normal" />
+        Normal (%IrrigationDurationNormal%)<br />
+        <input type="radio" name="Duration" value="Cool" />
+        Cool (%IrrigationDurationCool%)<br />
+        <input type="radio" name="Duration" value="NULL" />Choose duration in
+        min
+        <input
+          type="number"
+          name="ChooseDuration"
+          value="45"
+          min="0"
+          max="120"
+        />
+        <br />
+        <p>Starttime:</p>
+        <label for="Starttimeh">Hour:</label>
+        <input
+          type="number"
+          id="Starttimeh"
+          name="Starttimeh"
+          value="5"
+          min="0"
+          max="23"
+        /><br />
+        <label for="Starttimemin">Min:</label>
+        <input
+          type="number"
+          id="Starttimemin"
+          name="Starttimemin"
+          value="50"
+          min="0"
+          max="59"
+        /><br /><br />
+        <input class="button" type="submit" value="Change Plan" />
+      </form>
+    </div>
+
+    <br />
+    <div class="Box">
+      <h2>Settings</h2>
+      <p><a href="/setDuration">Change Irrigation</a></p>
+      <p><a href="/setTime">Change current Time</a></p>
+    </div>
+  </body>
+  <script></script>
+</html>
